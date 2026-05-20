@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Analyst — AI Fundamental Analysis</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #080b10; font-family: 'Outfit', sans-serif; }
+  input:focus { outline: 2px solid #2563eb; outline-offset: 0; }
+  ::-webkit-scrollbar { width: 6px; } 
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+  @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .fade-in { animation: fadeIn 0.4s ease forwards; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef } = React;
+
+// ─── VERSION — bump this when you update layers ───────────────────────────
+const VERSION = "v1.0 · Layer 1";
+const LAYER_NOTES = "Fundamentals · Moat · ML Signals · Buy/Hold/Sell verdict";
+// ─────────────────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are an expert stock analyst with deep knowledge of fundamental analysis, valuation, and market dynamics. When given a stock ticker and optional context (whether the user holds it or not), you perform a comprehensive fundamental analysis and return ONLY a valid JSON object — no markdown, no preamble, no explanation outside the JSON.
+
+The JSON must follow this exact schema:
+{
+  "ticker": "AAPL",
+  "companyName": "Apple Inc.",
+  "exchange": "NASDAQ",
+  "sector": "Technology",
+  "layer": "Downstream / Consumer Hardware",
+  "moatScore": 5,
+  "moatLabel": "Ultra Wide",
+  "verdict": "BUY",
+  "verdictReason": "One sentence explaining the verdict",
+  "convictionScore": 78,
+  "riskLevel": "Medium",
+  "timeHorizon": "2-3 years",
+  "revenueTrail": [
+    { "year": "2022", "value": "394B", "growth": null },
+    { "year": "2023", "value": "383B", "growth": "-2.8%" },
+    { "year": "2024", "value": "391B", "growth": "+2.1%" },
+    { "year": "2025", "value": "410B", "growth": "+4.9%" }
+  ],
+  "netIncomeTrail": [
+    { "year": "2022", "value": "99.8B", "positive": true },
+    { "year": "2023", "value": "97B", "positive": true },
+    { "year": "2024", "value": "94B", "positive": true },
+    { "year": "2025", "value": "105B", "positive": true }
+  ],
+  "metrics": [
+    { "label": "P/E Ratio", "value": "31x", "signal": "neutral", "note": "Fair for quality" },
+    { "label": "Gross Margin", "value": "46.2%", "signal": "green", "note": "Best-in-class" },
+    { "label": "Net Cash", "value": "+$48B", "signal": "green", "note": "Fortress balance" },
+    { "label": "ROE", "value": "147%", "signal": "green", "note": "Buyback-driven" },
+    { "label": "Rev Growth", "value": "+4.9%", "signal": "neutral", "note": "Maturing biz" },
+    { "label": "Fwd P/E", "value": "27x", "signal": "neutral", "note": "2026 estimate" }
+  ],
+  "pros": [
+    "Ecosystem lock-in across 2B+ devices",
+    "Services segment growing 15%+ annually",
+    "AI integration driving upgrade cycle"
+  ],
+  "cons": [
+    "China revenue risk — 17% of sales",
+    "iPhone growth plateauing in mature markets",
+    "Antitrust risk in app store model"
+  ],
+  "watchIndicators": ["iPhone unit sales", "Services revenue %", "China revenue", "AI adoption metrics"],
+  "catalysts": ["AI-driven upgrade supercycle", "Services margin expansion", "India market growth"],
+  "risks": ["China geopolitical tensions", "Antitrust regulation", "Valuation compression"],
+  "mlSignals": {
+    "valuationScore": 62,
+    "momentumScore": 55,
+    "qualityScore": 91,
+    "sentimentScore": 70,
+    "overallScore": 78
+  },
+  "analystConsensus": "BUY",
+  "priceTarget": "242",
+  "oneLiner": "A quality compounder with AI tailwinds, priced fairly"
+}
+
+Rules:
+- verdict must be one of: "STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL"
+- signal in metrics must be: "green", "yellow", "red", or "neutral"
+- moatScore: 1-5 integer
+- convictionScore: 0-100 integer
+- mlSignals scores: 0-100 integers
+- If the user says they already hold the stock, frame the verdict as hold/buy more/trim/sell
+- Use real known data for well-known tickers
+- Revenue/income values should be human-readable (e.g. "28.3B", "751M", "-301M")
+- Be honest — if a stock is richly valued or risky, say so
+- Always return ONLY the JSON. No text before or after.`;
+
+const SIGNAL_COLORS = { green:"#34d399", yellow:"#fbbf24", red:"#f87171", neutral:"#94a3b8" };
+const VERDICT_CONFIG = {
+  "STRONG BUY":  { bg:"#052e16", border:"#16a34a", text:"#4ade80" },
+  "BUY":         { bg:"#052e16", border:"#15803d", text:"#86efac" },
+  "HOLD":        { bg:"#1c1917", border:"#78716c", text:"#d6d3d1" },
+  "SELL":        { bg:"#2d0c0c", border:"#b91c1c", text:"#fca5a5" },
+  "STRONG SELL": { bg:"#2d0c0c", border:"#991b1b", text:"#ef4444" }
+};
+const RISK_COLOR = { "Low":"#34d399","Medium":"#fbbf24","Medium-High":"#f97316","High":"#ef4444","Very High":"#dc2626" };
+
+function ScoreBar({ label, score }) {
+  const c = score >= 70 ? "#34d399" : score >= 45 ? "#fbbf24" : "#f87171";
+  return (
+    <div style={{marginBottom:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+        <span style={{fontSize:10,color:"#64748b",fontFamily:"'IBM Plex Mono',monospace",textTransform:"uppercase",letterSpacing:"0.5px"}}>{label}</span>
+        <span style={{fontSize:10,fontFamily:"'IBM Plex Mono',monospace",color:c}}>{score}</span>
+      </div>
+      <div style={{background:"#1e293b",borderRadius:3,height:5,overflow:"hidden"}}>
+        <div style={{width:`${score}%`,height:"100%",background:c,borderRadius:3,transition:"width 1s ease"}}/>
+      </div>
+    </div>
+  );
+}
+
+function MiniBarChart({ data }) {
+  const vals = data.map(d => parseFloat(d.value.replace(/[^0-9.\-]/g,"")) || 0);
+  const maxVal = Math.max(...vals.map(Math.abs)) || 1;
+  return (
+    <div style={{display:"flex",gap:6,alignItems:"flex-end",height:60}}>
+      {data.map((d,i) => {
+        const v = vals[i];
+        const h = Math.max(4,(Math.abs(v)/maxVal)*44);
+        const isPos = d.positive !== false && v >= 0;
+        return (
+          <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <div style={{fontSize:8,fontFamily:"'IBM Plex Mono',monospace",color:isPos?"#34d399":"#f87171",textAlign:"center"}}>{d.value}</div>
+            <div style={{width:"100%",height:44,display:"flex",alignItems:isPos?"flex-end":"flex-start",justifyContent:"center"}}>
+              <div style={{width:"80%",height:h,background:isPos?"rgba(52,211,153,0.7)":"rgba(248,113,113,0.7)",borderRadius:isPos?"2px 2px 0 0":"0 0 2px 2px"}}/>
+            </div>
+            <div style={{fontSize:8,color:"#475569",fontFamily:"'IBM Plex Mono',monospace"}}>{d.year}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function App() {
+  const [ticker, setTicker] = useState("");
+  const [holding, setHolding] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+
+  const analyze = async () => {
+    if (!ticker.trim()) return;
+    setLoading(true);
+    setError(null);
+    setAnalysis(null);
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          system: SYSTEM_PROMPT,
+          messages: [{
+            role: "user",
+            content: `Analyze stock ticker: ${ticker.trim().toUpperCase()}. ${holding ? "I currently hold this stock." : "I am considering buying this stock."} Return only valid JSON, no markdown fences, no extra text.`
+          }]
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.error) { setError(`API error: ${data.error.message}`); return; }
+
+      const textBlock = data.content?.find(b => b.type === "text");
+      if (!textBlock?.text) { setError(`No text in response. Stop reason: ${data.stop_reason}`); return; }
+
+      const raw = textBlock.text.trim();
+      const first = raw.indexOf("{"), last = raw.lastIndexOf("}");
+      if (first === -1 || last === -1) { setError(`No JSON found in response: ${raw.slice(0,150)}`); return; }
+
+      const parsed = JSON.parse(raw.slice(first, last + 1));
+      setAnalysis(parsed);
+    } catch(err) {
+      setError(`Error: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const s = { // shared styles shorthand
+    card: { background:"#0d1420", border:"1px solid #1e293b", borderRadius:12 },
+    label: { fontSize:9, color:"#334155", fontFamily:"'IBM Plex Mono',monospace", textTransform:"uppercase", letterSpacing:1, marginBottom:10 }
+  };
+
+  const a = analysis;
+  const vc = a ? (VERDICT_CONFIG[a.verdict] || VERDICT_CONFIG["HOLD"]) : null;
+
+  return (
+    <div style={{fontFamily:"'Outfit',sans-serif",background:"#080b10",minHeight:"100vh",color:"#e2e8f0",padding:"28px 20px 60px",maxWidth:680,margin:"0 auto"}}>
+
+      {/* Header */}
+      <div style={{marginBottom:24}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div style={{fontFamily:"'DM Serif Display',serif",fontSize:24,color:"#f1f5f9",letterSpacing:"-0.5px"}}>Stock Analyst</div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:9,color:"#1e3a5f",fontFamily:"'IBM Plex Mono',monospace"}}>{VERSION}</div>
+            <div style={{fontSize:9,color:"#1e293b",fontFamily:"'IBM Plex Mono',monospace"}}>{LAYER_NOTES}</div>
+          </div>
+        </div>
+        <div style={{fontSize:12,color:"#334155",fontFamily:"'IBM Plex Mono',monospace",marginTop:2}}>
+          Fundamental analysis · AI-powered · Buy / Hold / Sell verdict
+        </div>
+      </div>
+
+      {/* Input row */}
+      <div style={{display:"flex",gap:10,marginBottom:10}}>
+        <input
+          ref={inputRef}
+          value={ticker}
+          onChange={e => setTicker(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === "Enter" && analyze()}
+          placeholder="Ticker  e.g. NVDA"
+          maxLength={10}
+          style={{flex:1,background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,padding:"12px 16px",color:"#f1f5f9",fontSize:16,fontFamily:"'IBM Plex Mono',monospace",fontWeight:600,letterSpacing:2}}
+        />
+        <button
+          onClick={analyze}
+          disabled={loading || !ticker.trim()}
+          style={{background:loading||!ticker.trim()?"#0f172a":"#2563eb",color:loading||!ticker.trim()?"#334155":"#fff",border:"1px solid "+(loading||!ticker.trim()?"#1e293b":"#2563eb"),borderRadius:10,padding:"12px 22px",fontSize:14,fontWeight:600,cursor:loading||!ticker.trim()?"not-allowed":"pointer",fontFamily:"'Outfit',sans-serif",flexShrink:0}}
+        >
+          {loading ? "Analyzing…" : "Analyze →"}
+        </button>
+      </div>
+
+      {/* Holding toggle */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:24}}>
+        <div onClick={() => setHolding(!holding)} style={{width:36,height:20,borderRadius:10,background:holding?"#2563eb":"#1e293b",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
+          <div style={{width:14,height:14,borderRadius:"50%",background:"#fff",position:"absolute",top:3,left:holding?19:3,transition:"left 0.2s"}}/>
+        </div>
+        <span style={{fontSize:12,color:"#475569",fontFamily:"'IBM Plex Mono',monospace",cursor:"pointer"}} onClick={() => setHolding(!holding)}>
+          I already hold this stock
+        </span>
+      </div>
+
+      {/* Loading */}
+      {loading && (
+        <div style={{textAlign:"center",padding:"40px 0"}}>
+          <div style={{fontSize:13,color:"#334155",fontFamily:"'IBM Plex Mono',monospace",marginBottom:16}}>Running analysis on {ticker}…</div>
+          <div style={{display:"flex",justifyContent:"center",gap:6,flexWrap:"wrap"}}>
+            {["Valuation","Earnings","Moat","Sentiment","Verdict"].map((s,i) => (
+              <div key={s} style={{fontSize:10,color:"#334155",fontFamily:"'IBM Plex Mono',monospace",background:"#0f172a",border:"1px solid #1e293b",padding:"4px 10px",borderRadius:20,animation:`pulse 1.5s ease-in-out ${i*0.2}s infinite`}}>{s}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div style={{background:"#2d0c0c",border:"1px solid #7f1d1d",borderRadius:10,padding:16,marginBottom:16}}>
+          <div style={{fontSize:13,color:"#fca5a5",fontWeight:600,marginBottom:4}}>Analysis failed</div>
+          <div style={{fontSize:11,color:"#f87171",fontFamily:"'IBM Plex Mono',monospace",lineHeight:1.6}}>{error}</div>
+          <div style={{fontSize:11,color:"#7f1d1d",marginTop:8}}>Try again — or use a major ticker like AAPL, MSFT, NVDA, TSM.</div>
+        </div>
+      )}
+
+      {/* Result */}
+      {a && !loading && (
+        <div style={{display:"flex",flexDirection:"column",gap:14}} className="fade-in">
+
+          {/* Identity + verdict */}
+          <div style={{...s.card,overflow:"hidden"}}>
+            <div style={{padding:"18px 20px",borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div>
+                <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:26,fontWeight:700,color:"#f1f5f9"}}>{a.ticker}</span>
+                  <span style={{fontSize:13,color:"#475569"}}>{a.companyName}</span>
+                </div>
+                <div style={{fontSize:11,color:"#334155",fontFamily:"'IBM Plex Mono',monospace",marginTop:4}}>{a.exchange} · {a.sector} · {a.layer}</div>
+                <div style={{marginTop:8,fontSize:12,color:"#94a3b8",fontStyle:"italic"}}>"{a.oneLiner}"</div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{background:vc.bg,border:`1px solid ${vc.border}`,borderRadius:10,padding:"8px 14px",fontSize:15,fontWeight:700,color:vc.text,fontFamily:"'IBM Plex Mono',monospace",letterSpacing:1}}>{a.verdict}</div>
+                <div style={{fontSize:10,color:"#475569",marginTop:5,fontFamily:"'IBM Plex Mono',monospace"}}>Conviction: <span style={{color:a.convictionScore>=70?"#34d399":a.convictionScore>=50?"#fbbf24":"#f87171"}}>{a.convictionScore}/100</span></div>
+                <div style={{fontSize:10,color:"#475569",marginTop:2,fontFamily:"'IBM Plex Mono',monospace"}}>Risk: <span style={{color:RISK_COLOR[a.riskLevel]||"#fbbf24"}}>{a.riskLevel}</span></div>
+              </div>
+            </div>
+            <div style={{padding:"10px 20px",background:"#0a1118"}}>
+              <span style={{fontSize:12,color:vc.text,fontWeight:500}}>Why: </span>
+              <span style={{fontSize:12,color:"#64748b"}}>{a.verdictReason}</span>
+            </div>
+          </div>
+
+          {/* Revenue + Net Income */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <div style={{...s.card,padding:"16px"}}>
+              <div style={s.label}>Annual Revenue</div>
+              {a.revenueTrail.map((r,i) => {
+                const vals2 = a.revenueTrail.map(x => parseFloat(x.value.replace(/[^0-9.]/g,""))||0);
+                const mx = Math.max(...vals2)||1;
+                const v2 = parseFloat(r.value.replace(/[^0-9.]/g,""))||0;
+                const pct = Math.max(8,(v2/mx)*100);
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                    <span style={{fontSize:10,color:"#475569",fontFamily:"'IBM Plex Mono',monospace",width:32}}>{r.year}</span>
+                    <div style={{flex:1,background:"#1e293b",borderRadius:3,height:16,overflow:"hidden",position:"relative"}}>
+                      <div style={{width:`${pct}%`,height:"100%",background:"rgba(59,130,246,0.6)",borderRadius:3}}/>
+                      <span style={{position:"absolute",right:5,top:"50%",transform:"translateY(-50%)",fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:"#e2e8f0"}}>{r.value}</span>
+                    </div>
+                    {r.growth && <span style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:r.growth.startsWith("+")||r.growth.startsWith("+")?r.growth.startsWith("+")||parseFloat(r.growth)>=0?"#34d399":"#f87171":"#f87171",width:36,textAlign:"right"}}>{r.growth}</span>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{...s.card,padding:"16px"}}>
+              <div style={s.label}>Net Income</div>
+              <MiniBarChart data={a.netIncomeTrail}/>
+            </div>
+          </div>
+
+          {/* Key metrics */}
+          <div style={{...s.card,padding:"16px"}}>
+            <div style={s.label}>Key Fundamentals</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+              {a.metrics.map((m,i) => (
+                <div key={i} style={{background:"#0a1118",border:"1px solid #1e293b",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:9,color:"#475569",fontFamily:"'IBM Plex Mono',monospace",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>{m.label}</div>
+                  <div style={{fontSize:16,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:SIGNAL_COLORS[m.signal]||SIGNAL_COLORS.neutral}}>{m.value}</div>
+                  <div style={{fontSize:9,color:"#475569",marginTop:2}}>{m.note}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ML Signals */}
+          <div style={{...s.card,padding:"16px"}}>
+            <div style={s.label}>ML Signal Scores (0–100)</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}>
+              <ScoreBar label="Valuation" score={a.mlSignals.valuationScore}/>
+              <ScoreBar label="Momentum" score={a.mlSignals.momentumScore}/>
+              <ScoreBar label="Quality" score={a.mlSignals.qualityScore}/>
+              <ScoreBar label="Sentiment" score={a.mlSignals.sentimentScore}/>
+            </div>
+            <div style={{marginTop:12,background:"#0a1118",border:"1px solid #1e293b",borderRadius:8,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:11,color:"#64748b",fontFamily:"'IBM Plex Mono',monospace"}}>Overall Signal Score</span>
+              <span style={{fontSize:22,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:a.mlSignals.overallScore>=70?"#34d399":a.mlSignals.overallScore>=50?"#fbbf24":"#ef4444"}}>
+                {a.mlSignals.overallScore}<span style={{fontSize:12,color:"#475569"}}>/100</span>
+              </span>
+            </div>
+          </div>
+
+          {/* Bulls / Bears */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <div style={{...s.card,padding:"14px 16px"}}>
+              <div style={{...s.label,color:"#34d399"}}>↑ Bulls say</div>
+              {a.pros.map((p,i) => (
+                <div key={i} style={{fontSize:12,color:"#94a3b8",marginBottom:7,paddingLeft:14,position:"relative",lineHeight:1.5}}>
+                  <span style={{position:"absolute",left:0,color:"#34d399",fontSize:10}}>↑</span>{p}
+                </div>
+              ))}
+            </div>
+            <div style={{...s.card,padding:"14px 16px"}}>
+              <div style={{...s.label,color:"#f87171"}}>↓ Bears say</div>
+              {a.cons.map((c,i) => (
+                <div key={i} style={{fontSize:12,color:"#94a3b8",marginBottom:7,paddingLeft:14,position:"relative",lineHeight:1.5}}>
+                  <span style={{position:"absolute",left:0,color:"#f87171",fontSize:10}}>↓</span>{c}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Catalysts + Watch */}
+          <div style={{...s.card,padding:"14px 16px"}}>
+            <div style={s.label}>Catalysts</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+              {a.catalysts.map((c,i) => (
+                <span key={i} style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",background:"rgba(59,130,246,0.1)",border:"1px solid rgba(59,130,246,0.25)",color:"#93c5fd",padding:"3px 10px",borderRadius:20}}>{c}</span>
+              ))}
+            </div>
+            <div style={s.label}>Track these quarterly</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {a.watchIndicators.map((w,i) => (
+                <span key={i} style={{fontSize:10,fontFamily:"'IBM Plex Mono',monospace",background:"#0a1118",border:"1px solid #1e293b",color:"#64748b",padding:"3px 9px",borderRadius:20}}>{w}</span>
+              ))}
+            </div>
+          </div>
+
+          {/* Consensus + Horizon */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <div style={{...s.card,padding:"14px 16px"}}>
+              <div style={s.label}>Analyst Consensus</div>
+              <div style={{fontSize:18,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#60a5fa"}}>{a.analystConsensus}</div>
+              {a.priceTarget && <div style={{fontSize:11,color:"#475569",marginTop:4}}>Price target: ${a.priceTarget}</div>}
+            </div>
+            <div style={{...s.card,padding:"14px 16px"}}>
+              <div style={s.label}>Suggested Horizon</div>
+              <div style={{fontSize:18,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:"#e2e8f0"}}>{a.timeHorizon}</div>
+              <div style={{fontSize:11,color:"#475569",marginTop:4}}>Hold period</div>
+            </div>
+          </div>
+
+          <div style={{fontSize:10,color:"#1e293b",textAlign:"center",lineHeight:1.6,fontStyle:"italic",paddingTop:4}}>
+            AI-generated for educational purposes only. Not financial advice. Always do your own research.
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!a && !loading && !error && (
+        <div style={{textAlign:"center",padding:"40px 0"}}>
+          <div style={{fontSize:13,color:"#1e293b",fontFamily:"'IBM Plex Mono',monospace",marginBottom:20}}>— Enter any stock ticker to begin —</div>
+          <div style={{display:"flex",justifyContent:"center",gap:8,flexWrap:"wrap"}}>
+            {["NVDA","TSM","ASML","VRT","BE","AAPL","MSFT","GOOGL"].map(t => (
+              <button key={t} onClick={() => setTicker(t)}
+                style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:"7px 14px",color:"#475569",fontSize:12,fontFamily:"'IBM Plex Mono',monospace",cursor:"pointer"}}
+                onMouseEnter={e=>{e.target.style.borderColor="#2563eb";e.target.style.color="#60a5fa"}}
+                onMouseLeave={e=>{e.target.style.borderColor="#1e293b";e.target.style.color="#475569"}}
+              >{t}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
